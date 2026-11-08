@@ -50,13 +50,64 @@ jobs:
 
       - name: Show versions
         run: |
-          rustc -Vv
-          cargo -V
-          cargo llvm-cov --version
+          New-Item -ItemType Directory -Force target/coverage-debug | Out-Null
+          rustc -Vv 2>&1 | Tee-Object -FilePath target/coverage-debug/versions.txt
+          cargo -V 2>&1 | Tee-Object -FilePath target/coverage-debug/versions.txt -Append
+          cargo llvm-cov --version 2>&1 | Tee-Object -FilePath target/coverage-debug/versions.txt -Append
 
       - name: Generate coverage
+        id: coverage
         # Avoid unrelated Mercurial setup while retaining the failing report path.
-        run: >-
-          cargo llvm-cov --all-features --locked --workspace
-          --lcov --output-path lcov.info
-          -- --include-ignored --skip hg
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          cargo llvm-cov -vv --color never --all-features --locked --workspace --lcov --output-path lcov.info -- --include-ignored --skip hg 2>&1 |
+            Tee-Object -FilePath target/coverage-debug/coverage.log
+          exit $LASTEXITCODE
+
+      - name: Inspect coverage binaries
+        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
+        run: |
+          $sysroot = rustc --print sysroot
+          $hostTriple = ((rustc -Vv | Select-String '^host: ') -replace '^host: ', '').Trim()
+          $llvmBin = Join-Path $sysroot "lib/rustlib/$hostTriple/bin"
+          & "$llvmBin/llvm-cov.exe" --version 2>&1 |
+            Tee-Object -FilePath target/coverage-debug/versions.txt -Append
+
+          $objects = Get-ChildItem target/llvm-cov-target/debug -Recurse -Filter *.exe |
+            Where-Object { $_.Name -match '^(starship(?:_poc_cov)?|poc_cov_bin)-[0-9a-f]+\.exe$' }
+          $objects | Select-Object FullName, Length | Format-Table -AutoSize |
+            Out-String -Width 400 | Tee-Object -FilePath target/coverage-debug/objects.txt
+          foreach ($object in $objects) {
+            & "$llvmBin/llvm-readobj.exe" --file-headers --sections $object.FullName 2>&1 |
+              Tee-Object -FilePath "target/coverage-debug/$($object.Name).sections.txt"
+            if ($LASTEXITCODE -ne 0) { throw "llvm-readobj failed for $($object.FullName)" }
+          }
+          Get-ChildItem target/llvm-cov-target -Filter *.profdata | ForEach-Object {
+            & "$llvmBin/llvm-profdata.exe" show $_.FullName 2>&1 |
+              Tee-Object -FilePath "target/coverage-debug/$($_.Name).summary.txt"
+            if ($LASTEXITCODE -ne 0) { throw "llvm-profdata failed for $($_.FullName)" }
+          }
+
+      - name: Upload coverage diagnostics
+        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-${{ matrix.project }}-${{ matrix.rust }}
+          retention-days: 7
+          compression-level: 1
+          include-hidden-files: true
+          path: |
+            target/coverage-debug/
+            lcov.info
+            target/llvm-cov-target/*.profdata
+            target/llvm-cov-target/*.profraw
+            target/llvm-cov-target/debug/deps/starship*.exe
+            target/llvm-cov-target/debug/deps/poc_cov_bin-*.exe
+            target/llvm-cov-target/debug/build/starship*/**/out/starship*.exe
+            target/llvm-cov-target/debug/build/starship*/**/out/poc_cov_bin-*.exe
+            target/llvm-cov-target/debug/build/starship*/**/fingerprint/*.json
+            target/llvm-cov-target/debug/.fingerprint/starship*/*.json
+            target/llvm-cov-target/debug/build/starship*/**/run/stdout
+            target/llvm-cov-target/debug/build/starship*/output
+            target/llvm-cov-target/debug/build/starship*/**/out/*.rc
+            target/llvm-cov-target/debug/build/starship*/**/out/*.res
