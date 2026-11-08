@@ -1,0 +1,62 @@
+name: Coverage repro
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUST_BACKTRACE: short
+  RUSTUP_MAX_RETRIES: 10
+  RUSTFLAGS: -C target-feature=+crt-static
+
+jobs:
+  coverage:
+    name: Coverage (${{ matrix.project }}, ${{ matrix.rust }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [minimal, starship]
+        rust: [stable, nightly]
+    env:
+      CARGO_BUILD_WARNINGS: ${{ matrix.rust == 'stable' && 'deny' || 'allow' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ matrix.project == 'starship' && 'starship/starship' || github.repository }}
+          # Pin the Starship revision reproduced locally; use this repo for reduction.
+          ref: ${{ matrix.project == 'starship' && 'e4fe0f28f095ade7f832934d1dcb7de0ec6d6c13' || github.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust
+        run: |
+          rustup toolchain install ${{ matrix.rust }} --profile minimal --component llvm-tools-preview --no-self-update
+          rustup default ${{ matrix.rust }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Show versions
+        run: |
+          rustc -Vv
+          cargo -V
+          cargo llvm-cov --version
+
+      - name: Generate coverage
+        # Avoid unrelated Mercurial setup while retaining the failing report path.
+        run: >-
+          cargo llvm-cov --all-features --locked --workspace
+          --lcov --output-path lcov.info
+          -- --include-ignored --skip hg
