@@ -17,13 +17,24 @@ env:
 
 jobs:
   coverage:
-    name: Coverage (${{ matrix.project }}, ${{ matrix.rust }})
+    name: Coverage (${{ matrix.project }}, ${{ matrix.rust }}, ${{ matrix.mode }})
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
         project: [minimal, starship]
         rust: [stable, nightly]
+        mode: [baseline]
+        include:
+          - project: minimal
+            rust: nightly
+            mode: argfile
+          - project: minimal
+            rust: nightly
+            mode: argfile-no-wrapper
+          - project: starship
+            rust: nightly
+            mode: no-wrapper
     env:
       CARGO_BUILD_WARNINGS: ${{ matrix.rust == 'stable' && 'deny' || 'allow' }}
     steps:
@@ -44,9 +55,16 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
-        with:
-          tool: cargo-llvm-cov
+        # Fork that expands Cargo's @argfile rustc invocation.
+        # https://github.com/davidkna/cargo-llvm-cov/tree/fix-argfile
+        run: >-
+          cargo install --git https://github.com/davidkna/cargo-llvm-cov --force
+          --rev 20b4ed88752fda8416fee9485dce907c645f4412 --locked cargo-llvm-cov
+
+      - name: Force Cargo response files
+        if: startsWith(matrix.mode, 'argfile')
+        # Cargo's own test switch reproduces the long-command fallback without dependencies.
+        run: '"__CARGO_TEST_FORCE_ARGFILE=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append'
 
       - name: Show versions
         run: |
@@ -54,13 +72,16 @@ jobs:
           rustc -Vv 2>&1 | Tee-Object -FilePath target/coverage-debug/versions.txt
           cargo -V 2>&1 | Tee-Object -FilePath target/coverage-debug/versions.txt -Append
           cargo llvm-cov --version 2>&1 | Tee-Object -FilePath target/coverage-debug/versions.txt -Append
+          # Record the git source and revision so artifacts prove the fork was used.
+          cargo install --list 2>&1 | Select-String -Pattern 'cargo-llvm-cov' -Context 0,1 |
+            Out-String -Width 400 | Tee-Object -FilePath target/coverage-debug/versions.txt -Append
 
       - name: Generate coverage
         id: coverage
         # Avoid unrelated Mercurial setup while retaining the failing report path.
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
-          cargo llvm-cov -vv --color never --all-features --locked --workspace --lcov --output-path lcov.info -- --include-ignored --skip hg 2>&1 |
+          cargo llvm-cov ${{ contains(matrix.mode, 'no-wrapper') && '--no-rustc-wrapper' || '' }} -vv --color never --all-features --locked --workspace --lcov --output-path lcov.info -- --include-ignored --skip hg 2>&1 |
             Tee-Object -FilePath target/coverage-debug/coverage.log
           exit $LASTEXITCODE
 
@@ -92,7 +113,7 @@ jobs:
         if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: coverage-${{ matrix.project }}-${{ matrix.rust }}
+          name: coverage-${{ matrix.project }}-${{ matrix.rust }}-${{ matrix.mode }}
           retention-days: 7
           compression-level: 1
           include-hidden-files: true
