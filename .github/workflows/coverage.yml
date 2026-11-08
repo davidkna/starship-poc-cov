@@ -59,7 +59,7 @@ jobs:
         # https://github.com/davidkna/cargo-llvm-cov/tree/fix-argfile
         run: >-
           cargo install --git https://github.com/davidkna/cargo-llvm-cov --force
-          --rev 20b4ed88752fda8416fee9485dce907c645f4412 --locked cargo-llvm-cov
+          --rev 96f06f1ffbc70f8bfc7599619033b61163e62b06 --locked cargo-llvm-cov
 
       - name: Force Cargo response files
         if: startsWith(matrix.mode, 'argfile')
